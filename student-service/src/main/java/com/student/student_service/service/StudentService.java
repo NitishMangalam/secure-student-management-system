@@ -1,9 +1,10 @@
 package com.student.student_service.service;
 
+import com.student.student_service.dto.StudentDTO;
 import com.student.student_service.entity.Student;
 import com.student.student_service.repository.StudentRepository;
-import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker; // Circuit Breaker
-import io.micrometer.observation.annotation.Observed; // Tracing
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
@@ -21,35 +22,45 @@ public class StudentService {
     }
 
     /**
-     * @Observed: Creates a "Span" in Zipkin so you can see the time taken for this save operation.
-     * @CircuitBreaker: Monitors this method. If Kafka fails 50% of the time, it stops trying
-     * and calls the 'fallbackSaveStudent' method instead.
+     * UPDATED: Now accepts StudentDTO to hide Database Entity from the API layer.
      */
     @Observed(name = "student.save")
     @CircuitBreaker(name = "studentService", fallbackMethod = "fallbackSaveStudent")
-    public Student saveStudent(Student student) {
-        // 1. Save to MySQL
+    public Student saveStudent(StudentDTO request) {
+        // 1. Map DTO to Entity
+        Student student = new Student();
+        student.setName(request.getName());
+        student.setEmail(request.getEmail());
+        student.setDepartment(request.getDepartment());
+
+        // 2. Save to MySQL
         Student savedStudent = studentRepository.save(student);
 
-        // 2. Send to Kafka (Event-Driven)
-        // This is where the Circuit Breaker is watching!
-        kafkaTemplate.send("student-topic", "New Student Profile Created: " + savedStudent.getName());
-        System.out.println("Message successfully sent to Kafka");
+        // 3. Send to Kafka (Event-Driven)
+        // Format: "Created:Name" - this makes it easy for your Python AI service to parse
+        String kafkaMessage = "Created:" + savedStudent.getName();
+        kafkaTemplate.send("student-topic", kafkaMessage);
+
+        System.out.println("Message successfully sent to Kafka: " + kafkaMessage);
 
         return savedStudent;
     }
 
     /**
-     * FALLBACK METHOD: This runs ONLY if Kafka is down or the Circuit is OPEN.
-     * It ensures the user still gets a success message even if the notification fails.
+     * UPDATED FALLBACK: Matches the new DTO parameter.
+     * This triggers if Kafka is down, ensuring the DB save still happens.
      */
-    public Student fallbackSaveStudent(Student student, Exception e) {
+    public Student fallbackSaveStudent(StudentDTO request, Exception e) {
         System.err.println("--- CIRCUIT BREAKER ACTIVE ---");
-        System.err.println("Reason: " + e.getMessage());
+        System.err.println("Reason for Fallback: " + e.getMessage());
 
-        // We still save to DB so no data is lost!
+        Student student = new Student();
+        student.setName(request.getName());
+        student.setEmail(request.getEmail());
+        student.setDepartment(request.getDepartment());
+
         Student savedStudent = studentRepository.save(student);
-        System.out.println("Student saved to DB, but Kafka notification was skipped (Fallback).");
+        System.out.println("Student saved to DB only. Kafka notification skipped (Fallback mode).");
 
         return savedStudent;
     }
